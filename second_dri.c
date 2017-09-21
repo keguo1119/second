@@ -22,6 +22,7 @@ module_param(second_major, int, S_IRUGO);
 
 static struct class *second_class;
 struct second_dev *second_devp;
+static int counter = 0;
 
 struct second_dev {
     struct cdev cdev;
@@ -35,7 +36,7 @@ struct second_dev {
     struct timer_list s_timer;
     struct device	*dev;
     struct miscdevice miscdev;
-    const struct attribute_group	**groups;
+    const struct attribute_group **groups;
     struct work_struct mywork;
 };
 
@@ -63,24 +64,12 @@ static void second_timer_ctl(struct work_struct *ws)
 	int ret = 0;
 
     printk(KERN_INFO "%s trigger_store test\n", __func__);
-    msleep(500);
+    mdelay(500);
     return;
 }
 
 static int second_open(struct inode *inode, struct file *filp)
 {
- /*   init_timer(&second_devp->s_timer);
-    second_devp->s_timer.function   = &second_timer_handler;
-    second_devp->s_timer.expires    = jiffies + HZ;
-    add_timer(&second_devp->s_timer);
-*/
-
-//  struct second_dev *second_devp = container_of(filp->private_data, 
-//       struct second_dev, miscdev);
-
- //   struct  second_dev *second_devp = container_of(inode->i_cdev, struct second_dev, cdev);
-
-  
     mutex_lock(&second_devp->mutex);
     if(second_devp->state == 0)
     {
@@ -128,50 +117,44 @@ static ssize_t second_write(struct file *filp, const char __user *buf,
 }
 
 ssize_t trigger_store(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
+		const char *buf, size_t size)
 {
-    struct second_dev *sdev = dev_get_drvdata(dev);
-	unsigned long state;
-	ssize_t ret = 0;
-    printk(KERN_INFO "%s: 0 -state \n", __func__);
-    return 0;
+    struct second_dev *data = dev_get_drvdata(dev);
+    unsigned long state = 0;
+    ssize_t			status;
+    int ret;
 
-#ifdef  USE_MUTEX
-	mutex_lock(&sdev->mutex);
-
-	ret = kstrtoul(buf, 10, &state);
-	if (ret)
-		goto unlock;
-    printk(KERN_INFO "%s: 0 - mutex lock, state = %ld\n", __func__, state);
-
-    schedule_work(&sdev->mywork);
-
-    goto unlock;
-
-	if (state == 1)
+    printk(KERN_INFO "%s: 0 - mutex lock\n", __func__);
+    mutex_lock(&data->mutex);
+    ret = kstrtoul(buf, 10, &state);
+    if (ret)
+        goto unlock;
+    
+    if (state == 1)
     {
         printk(KERN_INFO "%s: 1 - mutex lock, state = %ld\n", __func__, state);
-        if (sdev->state == 0)
+        if (data->state == 0)
         {
             setup_timer(&second_devp->s_timer, second_timer_handler, (unsigned long)second_devp);
-            add_timer(&sdev->s_timer);
-            sdev->state = 1;
+            add_timer(&data->s_timer);
+            data->state = 1;
         }
     }
     else
     {
         printk(KERN_INFO "%s: 2 - mutex lock, state = %ld\n", __func__, state);
-        if(sdev->state == 1)
+        if(data->state == 1)
         {
-            del_timer(&sdev->s_timer);
-            sdev->state = 0;
+            del_timer(&data->s_timer);
+            data->state = 0;
         }
     }
-   printk(KERN_INFO "%s: 3 - mutex lock, state = %ld\n", __func__, state);
+
+    printk(KERN_INFO "%s: 1 - mutex lock, state = %d\n", __func__, state);
 unlock:
-    mutex_unlock(&dev->mutex);
-#endif
-	return ret;
+    mutex_unlock(&data->mutex);
+
+    return status ? : size;
 }
 
 ssize_t trigger_show(struct device *dev, struct device_attribute *attr,
@@ -181,8 +164,6 @@ ssize_t trigger_show(struct device *dev, struct device_attribute *attr,
 
     struct second_dev *sdev = dev_get_drvdata(dev);
 
-//    int *counter =  dev_get_drvdata(dev);
-    //printk(KERN_INFO "counter_addr=%p", counter);
 #ifndef  USE_MUTEX
     cnt = atomic_read(&sdev->counter);
 #else
@@ -196,8 +177,8 @@ ssize_t trigger_show(struct device *dev, struct device_attribute *attr,
      return sprintf(buf, "second_trigger_show: count =%d\n", cnt);
 //    return sprintf(buf, "second_trigger_show: count = %d, counter_addr=%p\n", *counter, counter);
 }
-//static DEVICE_ATTR_RW(trigger);
-static DEVICE_ATTR(trigger, 0644, trigger_show, trigger_store);
+static DEVICE_ATTR_RW(trigger);
+//static DEVICE_ATTR(trigger, 0644, trigger_show, trigger_store);
 static struct attribute *second_trigger_attrs[] = {
 	&dev_attr_trigger.attr,
 	NULL,
@@ -207,7 +188,8 @@ static const struct attribute_group second_trigger_group = {
 };
 
 static const struct attribute_group *second_groups[] = {
-	&second_trigger_group,
+    &second_trigger_group,
+    NULL,
 };
 
 static const struct file_operations second_fops = {
@@ -223,15 +205,6 @@ static int second_probe(struct platform_device *pdev)
     int ret, err;
     struct device *dev = &pdev->dev;
     dev_t devno = MKDEV(SECOND_MAJOR, 0);
-
-    if(SECOND_MAJOR)	{
-        ret = register_chrdev_region(devno, 1, "second");
-	}    else {
-         ret = alloc_chrdev_region(&devno, 0, 1, "second");
-         second_major = MAJOR(devno);
-    }
-    if(ret < 0)
-        return ret;
 
     second_devp = devm_kzalloc(dev, sizeof(*second_devp), GFP_KERNEL);
     if(!second_devp)
@@ -263,8 +236,10 @@ static int second_probe(struct platform_device *pdev)
     }
        
     second_devp->dev = device_create(second_class,  dev,
-				    MKDEV(SECOND_MAJOR, 0), second_devp, "second");	
-    
+                    MKDEV(SECOND_MAJOR, 0), second_devp, "second");	
+                    
+//    second_devp->dev =	device_create_with_groups(second_class,  dev,  
+//        MKDEV(SECOND_MAJOR, 0), second_devp, second_devp->groups,"second");
 //    platform_set_drvdata(pdev, second_devp);
 
     dev_info(&pdev->dev, "second_dev drv proded\n");
@@ -272,13 +247,13 @@ static int second_probe(struct platform_device *pdev)
 
 fail_malloc:
 	printk(KERN_INFO "6 - probe failed\n");
-    unregister_chrdev_region( MKDEV(SECOND_MAJOR, 0), 1);
     return ret;        
 }
 
 
 static int second_remove(struct platform_device *pdev)
 {
+    device_destroy(second_class, MKDEV(SECOND_MAJOR, 0));
     return 0;
 }
 
@@ -313,19 +288,18 @@ static void __exit second_exit(void)
     if(second_devp)
     {
         cdev_del(&second_devp->cdev);
-        del_timer(&second_devp->s_timer);   
+        if(second_devp->state == 1)
+            del_timer(&second_devp->s_timer);   
     }
       
-	device_destroy(second_class, MKDEV(SECOND_MAJOR, 0));
+    device_destroy(second_class, MKDEV(SECOND_MAJOR, 0));
     class_destroy(second_class);
-    unregister_chrdev_region(MKDEV(SECOND_MAJOR, 0), 1);
 
     platform_driver_unregister(&second_driver);
     printk(KERN_INFO "second: exit\n");
 }
 module_exit(second_exit);
 
-//module_platform_driver(second_driver);
 
 MODULE_AUTHOR("Bao hua");
 MODULE_LICENSE("GPL v2");

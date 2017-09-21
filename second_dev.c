@@ -18,7 +18,6 @@ static int __init seconddev_init(void)
 
     return 0;
 }
-
 module_init(seconddev_init);
 
 static void __exit seconddev_exit(void)
